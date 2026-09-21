@@ -85,5 +85,64 @@ proof_accept=$(printf '{"status":"accepted","expectedVersion":%s,"reason":"colou
 operator_accept_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/proofs/$proof_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$proof_accept")
 [ "$operator_accept_status" = "403" ]
 curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/proofs/$proof_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$proof_accept" | jq -e '.data.status == "accepted"' >/dev/null
+
+# Batch colour re-calibration closed loop: one pending request per batch,
+# equipment/deadline validation, reviewer-only actions, pass releases the
+# gate and fail holds the batch with an auto-generated quarantine decision.
+cal_run_code="PR-CAL-SMOKE-$(date +%s)"
+cal_run_payload=$(printf '{"code":"%s","name":"Runtime calibration batch","description":"Calibration closed loop validation","facility":"Validation Lab","owner":"operator","category":"calibration","riskLevel":"high","metricValue":2.8,"metricUnit":"dE","effectiveAt":"%s","evidence":"proofing batch entering recalibration","relatedCode":"PR-001"}' "$cal_run_code" "$now")
+cal_run=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$cal_run_payload")
+cal_run_id=$(printf '%s' "$cal_run" | jq -er '.data.id')
+cal_run_version=$(printf '%s' "$cal_run" | jq -er '.data.version')
+for cal_state in printing proofing; do
+	cal_step=$(printf '{"status":"%s","expectedVersion":%s,"reason":"advance calibration smoke batch"}' "$cal_state" "$cal_run_version")
+	cal_run=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_run_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$cal_step")
+	cal_run_version=$(printf '%s' "$cal_run" | jq -er '.data.version')
+done
+cal_due=$(date -u -d '+2 days' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+2d '+%Y-%m-%dT%H:%M:%SZ')
+cal_past=$(date -u -d '-1 hour' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ')
+cal_open=$(printf '{"printRunId":%s,"pressUnitId":1,"targetDelta":2,"samples":"CMYK colour bar and gray balance","retestDueAt":"%s"}' "$cal_run_id" "$cal_due")
+operator_cal_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$cal_open")
+[ "$operator_cal_status" = "403" ]
+cal_past_body=$(printf '{"printRunId":%s,"pressUnitId":1,"targetDelta":2,"samples":"CMYK colour bar","retestDueAt":"%s"}' "$cal_run_id" "$cal_past")
+cal_past_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_past_body")
+[ "$cal_past_status" = "422" ]
+calibration=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -H 'X-Request-ID: calibration-open-smoke' -d "$cal_open")
+calibration_id=$(printf '%s' "$calibration" | jq -er '.data.id')
+printf '%s' "$calibration" | jq -e '.data.status == "pending" and .data.version == 1 and .data.pressCode == "PU-001"' >/dev/null
+cal_duplicate_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_open")
+[ "$cal_duplicate_status" = "409" ]
+cal_blocked=$(printf '{"status":"released","expectedVersion":%s,"reason":"release must wait for retest"}' "$cal_run_version")
+cal_blocked_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_run_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_blocked")
+[ "$cal_blocked_status" = "422" ]
+cal_complete=$(printf '{"expectedVersion":1,"measuredDelta":1.6,"result":"passed","resultNote":"within target tolerance"}')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations/$calibration_id/complete" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -H 'X-Request-ID: calibration-pass-smoke' -d "$cal_complete" | jq -e '.data.status == "passed" and .data.version == 2 and .data.runStatus == "proofing"' >/dev/null
+cal_repeat_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations/$calibration_id/complete" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_complete")
+[ "$cal_repeat_status" = "409" ]
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/calibrations/$calibration_id" -H "Authorization: Bearer $reviewer_token" | jq -e '.data.measuredDelta == 1.6 and .data.completedBy == "reviewer"' >/dev/null
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_run_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_blocked" | jq -e '.data.status == "released"' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_run_id" -H "Authorization: Bearer $reviewer_token" | jq -e '.data.latestCalibration.status == "passed" and (.data.calibrations | length == 1)' >/dev/null
+
+# Failure branch on a second batch: over-tolerance retest holds the batch and
+# creates exactly one immutable quarantine decision.
+cal_fail_code="PR-CAL-FAIL-$(date +%s)"
+cal_fail_payload=$(printf '{"code":"%s","name":"Runtime calibration fail batch","description":"Over tolerance calibration validation","facility":"Validation Lab","owner":"operator","category":"calibration","riskLevel":"high","metricValue":3.4,"metricUnit":"dE","effectiveAt":"%s","evidence":"over tolerance proofing batch","relatedCode":"PR-001"}' "$cal_fail_code" "$now")
+cal_fail_run=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$cal_fail_payload")
+cal_fail_run_id=$(printf '%s' "$cal_fail_run" | jq -er '.data.id')
+cal_fail_version=$(printf '%s' "$cal_fail_run" | jq -er '.data.version')
+for cal_state in printing proofing; do
+	cal_fail_step=$(printf '{"status":"%s","expectedVersion":%s,"reason":"advance failing calibration batch"}' "$cal_state" "$cal_fail_version")
+	cal_fail_run=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_fail_run_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$cal_fail_step")
+	cal_fail_version=$(printf '%s' "$cal_fail_run" | jq -er '.data.version')
+done
+cal_fail_open=$(printf '{"printRunId":%s,"pressUnitId":2,"targetDelta":2,"samples":"CMYK colour bar and gray balance","retestDueAt":"%s"}' "$cal_fail_run_id" "$cal_due")
+cal_fail_cal=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$cal_fail_open")
+cal_fail_cal_id=$(printf '%s' "$cal_fail_cal" | jq -er '.data.id')
+cal_fail_complete='{"expectedVersion":1,"measuredDelta":3.4,"result":"failed","resultNote":"magenta channel out of tolerance"}'
+cal_fail_result=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/calibrations/$cal_fail_cal_id/complete" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -H 'X-Request-ID: calibration-fail-smoke' -d "$cal_fail_complete")
+quarantine_id=$(printf '%s' "$cal_fail_result" | jq -er '.data.quarantineDecisionId')
+printf '%s' "$cal_fail_result" | jq -e '.data.status == "failed" and .data.deviation == 1.4 and .data.runStatus == "hold" and (.data.quarantineCode | startswith("RD-CAL-"))' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/runs/$cal_fail_run_id" -H "Authorization: Bearer $reviewer_token" | jq -e ".data.status == \"hold\" and .data.version == $((cal_fail_version + 1))" >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/release/$quarantine_id" -H "Authorization: Bearer $reviewer_token" | jq -e '.data.status == "quarantine" and .data.metricValue == 3.4 and (.data.revisions | length == 1)' >/dev/null
 docker compose ps
 [ "${KEEP_RUNNING:-0}" = "1" ] && echo "KEEP_RUNNING=1: containers left running for browser validation"

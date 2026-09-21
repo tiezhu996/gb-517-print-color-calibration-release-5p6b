@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { request } from '../api/client';
 import { roleAtLeast, useAuth } from '../hooks/useAuth';
 import { usePagination } from '../hooks/usePagination';
-import type { EntityConfig, DomainRecord } from '../types/domain';
+import type { EntityConfig, DomainRecord, CalibrationRecord } from '../types/domain';
 import type { RunState } from '../types/status';
 import type { EntityStore } from '../stores/factory';
 import { formatDate } from '../utils/format';
@@ -13,6 +13,7 @@ import { EmptyState } from './common/EmptyState';
 import { MetricCard } from './common/MetricCard';
 import { ConfirmDialog } from './common/ConfirmDialog';
 import { UiButton } from './common/UiButton';
+import { CalibrationBadge, CalibrationPanel } from './common/CalibrationPanel';
 
 function decisionRunState(status: string): RunState {
   if (status === 'release') return 'released';
@@ -30,6 +31,12 @@ function nextPermittedStatus(config: EntityConfig, current: string, reviewer: bo
   return transitions[config.key]?.[current] ?? null;
 }
 
+// relatedRunCode extracts the print-run code referenced by a proof or release
+// record so the calibration loop can be displayed alongside it.
+function relatedRunCode(item: DomainRecord): string {
+  return item.relatedCode || '';
+}
+
 export function EntityPage({ config, useStore }: { config: EntityConfig; useStore: EntityStore }) {
   const { session } = useAuth();
   const { items, meta, loading, error, load, createRecord, transition } = useStore();
@@ -38,11 +45,47 @@ export function EntityPage({ config, useStore }: { config: EntityConfig; useStor
   const [showCreate, setShowCreate] = useState(false);
   const [pending, setPending] = useState<{ item: DomainRecord; status: string } | null>(null);
   const [detail, setDetail] = useState<DomainRecord | null>(null);
+  const [detailCalibration, setDetailCalibration] = useState<CalibrationRecord | null>(null);
+  const [rowCalibrations, setRowCalibrations] = useState<Record<string, CalibrationRecord>>({});
   const { page, pageSize, pages, setPage, previous, next } = usePagination(meta.total);
   const canWrite = roleAtLeast(session?.role, 'operator');
   const canReview = roleAtLeast(session?.role, 'reviewer');
+  const showsCalibration = config.key === 'colorProof' || config.key === 'releaseDecision';
 
   useEffect(() => { void load(config.path, submittedSearch, page, pageSize); }, [config.path, load, page, pageSize, submittedSearch]);
+
+  // Proofs and release decisions reference a print run through relatedCode;
+  // resolve their related batches' latest calibration requests in one query.
+  useEffect(() => {
+    if (!showsCalibration || items.length === 0) {
+      setRowCalibrations({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const all = await request<CalibrationRecord[]>('/calibrations?page=1&pageSize=100');
+      if (cancelled) return;
+      const latestByRunId = new Map<number, CalibrationRecord>();
+      for (const calibration of all.data) {
+        const existing = latestByRunId.get(calibration.printRunId);
+        if (!existing || calibration.id > existing.id) latestByRunId.set(calibration.printRunId, calibration);
+      }
+      const runs = await request<DomainRecord[]>('/runs?page=1&pageSize=100');
+      const codeToRun = new Map<string, DomainRecord>();
+      for (const run of runs.data) codeToRun.set(run.code, run);
+      const rows: Record<string, CalibrationRecord> = {};
+      for (const item of items) {
+        const run = codeToRun.get(relatedRunCode(item));
+        if (run) {
+          const calibration = run.latestCalibration ?? latestByRunId.get(run.id);
+          if (calibration) rows[item.code] = calibration;
+        }
+      }
+      setRowCalibrations(rows);
+    })();
+    return () => { cancelled = true; };
+  }, [items, showsCalibration]);
+
   const highRisk = useMemo(() => items.filter((item) => ['high', 'critical'].includes(item.riskLevel)).length, [items]);
   const createDemo = async () => {
     const now = Date.now();
@@ -52,8 +95,18 @@ export function EntityPage({ config, useStore }: { config: EntityConfig; useStor
     setShowCreate(false);
   };
   const openDetail = async (item: DomainRecord) => {
-    try { setDetail((await request<DomainRecord>(`/${config.path}/${item.id}`)).data); }
-    catch { setDetail(item); }
+    try {
+      const detail = (await request<DomainRecord>(`/${config.path}/${item.id}`)).data;
+      setDetail(detail);
+      if (config.key === 'printRun') {
+        setDetailCalibration(detail.latestCalibration ?? null);
+      } else {
+        setDetailCalibration(rowCalibrations[detail.code] ?? null);
+      }
+    } catch {
+      setDetail(item);
+      setDetailCalibration(null);
+    }
   };
 
   return <main className="workspace">
@@ -62,13 +115,17 @@ export function EntityPage({ config, useStore }: { config: EntityConfig; useStor
     {(config.key === 'colorProof' || config.key === 'releaseDecision') && <ColorTable records={items} title={config.key === 'colorProof' ? '当前校样读数' : '放行依据读数'} />}
     <section className="toolbar"><input aria-label="搜索" placeholder={`搜索${config.label}编码或名称`} value={search} onChange={(event) => setSearch(event.target.value)} /><UiButton onClick={() => { setPage(1); setSubmittedSearch(search); }}>查询</UiButton><button className="link-button" onClick={() => { setSearch(''); setSubmittedSearch(''); setPage(1); }}>重置</button></section>
     {error && <div className="alert" role="alert">{error}</div>}
-    <section className="table-shell" aria-busy={loading}><table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>风险</th><th>责任人</th><th>指标</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
-      {items.map((item) => { const target = nextPermittedStatus(config, item.status, canReview); return <tr key={item.id}><td><strong>{item.code}</strong></td><td><button className="record-link" onClick={() => void openDetail(item)}>{item.name}</button><small>{item.facility}</small></td><td>{config.key === 'printRun' ? <RunStateBadge state={item.status as RunState}/> : <StatusBadge status={item.status}/>} {config.key === 'releaseDecision' && <RunStateBadge state={decisionRunState(item.status)}/>}</td><td>{item.riskLevel}</td><td>{item.owner}</td><td>{item.metricValue} {item.metricUnit}</td><td>{formatDate(item.updatedAt)}</td><td>{canWrite && target ? <button className="table-action" onClick={() => setPending({ item, status: target })}>推进至 {target}</button> : <button className="table-action" onClick={() => void openDetail(item)}>查看详情</button>}</td></tr>; })}
-      {!items.length && !loading && <tr><td colSpan={8}><EmptyState title="没有匹配记录" detail="可清空搜索条件后重新查询" /></td></tr>}
+    <section className="table-shell" aria-busy={loading}><table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>风险</th><th>责任人</th><th>指标</th><th>复校准</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
+      {items.map((item) => {
+        const target = nextPermittedStatus(config, item.status, canReview);
+        const calibration = config.key === 'printRun' ? item.latestCalibration : rowCalibrations[item.code];
+        return <tr key={item.id}><td><strong>{item.code}</strong></td><td><button className="record-link" onClick={() => void openDetail(item)}>{item.name}</button><small>{item.facility}</small></td><td>{config.key === 'printRun' ? <RunStateBadge state={item.status as RunState}/> : <StatusBadge status={item.status}/>} {config.key === 'releaseDecision' && <RunStateBadge state={decisionRunState(item.status)}/>}</td><td>{item.riskLevel}</td><td>{item.owner}</td><td>{item.metricValue} {item.metricUnit}</td><td>{calibration ? <CalibrationBadge calibration={calibration} /> : <span className="muted">—</span>}</td><td>{formatDate(item.updatedAt)}</td><td>{canWrite && target ? <button className="table-action" onClick={() => setPending({ item, status: target })}>推进至 {target}</button> : <button className="table-action" onClick={() => void openDetail(item)}>查看详情</button>}</td></tr>;
+      })}
+      {!items.length && !loading && <tr><td colSpan={9}><EmptyState title="没有匹配记录" detail="可清空搜索条件后重新查询" /></td></tr>}
     </tbody></table>{loading && <div className="loading">正在同步业务数据…</div>}</section>
     <footer className="pagination"><button onClick={previous} disabled={page <= 1}>上一页</button><span>第 {page} / {pages} 页</span><button onClick={next} disabled={page >= pages}>下一页</button></footer>
     <ConfirmDialog open={showCreate} title={`新增${config.label}`} onCancel={() => setShowCreate(false)} onConfirm={() => void createDemo()}><p>将创建一条包含完整责任人、风险和证据信息的演示记录。</p></ConfirmDialog>
     <ConfirmDialog open={Boolean(pending)} title="确认状态迁移" onCancel={() => setPending(null)} onConfirm={() => { if (pending) void transition(config.path, pending.item, pending.status).then(() => setPending(null)); }}><p>状态迁移会写入审计日志；色彩配置和放行决定同时生成不可变版本。</p><strong>{pending?.item.status} → {pending?.status}</strong></ConfirmDialog>
-    <ConfirmDialog open={Boolean(detail)} title={`${detail?.code || ''} 记录详情`} onCancel={() => setDetail(null)} onConfirm={() => setDetail(null)}>{detail && <div className="detail-content"><p>{detail.description}</p><dl><div><dt>证据</dt><dd>{detail.evidence || '-'}</dd></div><div><dt>当前版本</dt><dd>v{detail.version}</dd></div></dl><ColorTable records={[detail]} title="记录色彩读数" />{detail.revisions?.length ? <div className="revision-list"><h3>版本链</h3>{detail.revisions.map((revision) => <article key={revision.id}><strong>v{revision.version} · {revision.status}</strong><span>{revision.actor} · {revision.reason}</span><code>{revision.requestId}</code></article>)}</div> : null}</div>}</ConfirmDialog>
+    <ConfirmDialog open={Boolean(detail)} title={`${detail?.code || ''} 记录详情`} onCancel={() => { setDetail(null); setDetailCalibration(null); }} onConfirm={() => { setDetail(null); setDetailCalibration(null); }}>{detail && <div className="detail-content"><p>{detail.description}</p><dl><div><dt>证据</dt><dd>{detail.evidence || '-'}</dd></div><div><dt>当前版本</dt><dd>v{detail.version}</dd></div></dl><CalibrationPanel record={detail} calibration={detailCalibration} /><ColorTable records={[detail]} title="记录色彩读数" />{detail.revisions?.length ? <div className="revision-list"><h3>版本链</h3>{detail.revisions.map((revision) => <article key={revision.id}><strong>v{revision.version} · {revision.status}</strong><span>{revision.actor} · {revision.reason}</span><code>{revision.requestId}</code></article>)}</div> : null}</div>}</ConfirmDialog>
   </main>;
 }

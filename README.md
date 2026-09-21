@@ -39,11 +39,13 @@ docker compose down -v --remove-orphans
 | 印刷批次 | `PrintRun` | `/api/runs` | setup, printing, proofing, hold, released |
 | 色彩校样 | `ColorProof` | `/api/proofs` | captured, review, accepted, rejected |
 | 放行决定 | `ReleaseDecision` | `/api/release` | draft, release, rework, quarantine |
+| 色彩复校准 | `CalibrationRequest` | `/api/calibrations` | pending, passed, failed |
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 色彩配置和放行决定在同一数据库事务内追加不可变修订；每个版本保留业务证据、操作者、请求 ID 和原因。
 - 已放行或隔离的决定禁止覆盖式编辑；校样接收/拒绝和批次放行只能由 `reviewer/admin` 完成。
+- **批次色彩复校准闭环**：批次进入校样后，复核人可对其发起一次校准，登记复测设备、目标色差、复测样本和复测期限；同一批次同时只能存在一条待处理申请（数据库唯一约束保证并发也只能成功一次），设备处于维护状态或期限无效时直接拒绝且不改变批次状态。复测回填时实测色差与目标色差自动比对，结果必须与实测一致；达标才解除批次放行限制，超差则在同一事务内把批次转入待处理并生成不可变的隔离决定（含批次配置版本与决定版本）。重复或并发回填只能成功一次，失败请求不会覆盖已提交证据。批次、校样和放行页均展示最近一次申请、目标/实测色差、偏差与最终状态，刷新后可回读。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
 - 业务工作台支持查询、新建、状态推进、分页、角色切换、色彩读数、版本详情及操作审计查看。
@@ -123,8 +125,26 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `RunState` | `setup, printing, proofing, hold, released` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `DecisionType` | `release, rework, quarantine` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| `CalibrationState` | `pending, passed, failed` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
+
+## 色彩复校准闭环
+
+```text
+批次 proofing
+   │ 复核人发起（设备可用 + 期限有效 + 同批次无待处理申请）
+   ▼
+CalibrationRequest pending  ── 阻止批次放行（422 calibration_rule）
+   │ 复测回填（reviewer/admin，结果必须与实测ΔE判定一致，乐观锁+条件更新）
+   ├── 实测 ≤ 目标 → passed：批次保持 proofing，放行闸门解除
+   └── 实测 > 目标 → failed：批次 proofing → hold（追加配置修订）
+                                  并生成 quarantine 放行决定（追加决定修订）
+```
+
+- `POST /api/calibrations`（reviewer/admin）发起；`POST /api/calibrations/:id/complete`（reviewer/admin）回填复测。
+- 终态（passed/failed）不可修改，需要再次校准时新建申请；所有动作写入审计并带请求 ID。
+- 工作台 `/calibrations` 管理申请与回填；批次、校样、放行详情复用 `CalibrationPanel`/`CalibrationBadge` 展示申请、偏差和最终状态。
 
 ## 环境变量
 

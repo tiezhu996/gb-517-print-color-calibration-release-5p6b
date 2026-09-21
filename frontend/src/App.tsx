@@ -1,7 +1,7 @@
 
 import { NavLink, Outlet } from 'react-router-dom';
 import { roleAtLeast, useAuth, type UserRole } from './hooks/useAuth';
-const navigation: { to: string; label: string; minimum: UserRole }[] = [{ to: '/presses', label: '印刷设备', minimum: 'viewer' }, { to: '/runs', label: '印刷批次', minimum: 'viewer' }, { to: '/proofs', label: '色彩校样', minimum: 'viewer' }, { to: '/release', label: '放行决定', minimum: 'viewer' }, { to: '/audit', label: '审计记录', minimum: 'reviewer' }];
+const navigation: { to: string; label: string; minimum: UserRole }[] = [{ to: '/presses', label: '印刷设备', minimum: 'viewer' }, { to: '/runs', label: '印刷批次', minimum: 'viewer' }, { to: '/proofs', label: '色彩校样', minimum: 'viewer' }, { to: '/release', label: '放行决定', minimum: 'viewer' }, { to: '/calibrations', label: '色彩复校准', minimum: 'viewer' }, { to: '/audit', label: '审计记录', minimum: 'reviewer' }];
 export default function App() {
   const { session, loading, switchRole } = useAuth();
   if (loading) return <div className="app-loading">正在建立安全会话…</div>;

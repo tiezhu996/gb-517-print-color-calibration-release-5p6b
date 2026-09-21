@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/print-color-calibration-release/backend/internal/dto"
 	"github.com/blueship581/print-color-calibration-release/backend/internal/model"
 	"github.com/blueship581/print-color-calibration-release/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type PrintRunService interface {
@@ -23,12 +25,13 @@ type PrintRunService interface {
 }
 
 type printRunService struct {
-	repository repository.PrintRunRepository
-	security   SecurityService
+	repository   repository.PrintRunRepository
+	calibrations repository.CalibrationRepository
+	security     SecurityService
 }
 
-func NewPrintRunService(repo repository.PrintRunRepository, security SecurityService) PrintRunService {
-	return &printRunService{repository: repo, security: security}
+func NewPrintRunService(repo repository.PrintRunRepository, calibrations repository.CalibrationRepository, security SecurityService) PrintRunService {
+	return &printRunService{repository: repo, calibrations: calibrations, security: security}
 }
 
 func (s *printRunService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.PrintRun], error) {
@@ -100,6 +103,15 @@ func (s *printRunService) Transition(ctx context.Context, id uint, input dto.Tra
 	}
 	if !constants.CanTransition(constants.PrintRunTransitions, current.Status, target) {
 		return model.PrintRun{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+	}
+	// The re-calibration closed loop gates release: a batch with an open
+	// calibration cannot be released until the retest is backfilled as passed.
+	if target == string(constants.RunStateReleased) {
+		if _, pendingErr := s.calibrations.FindPendingForRun(ctx, id); pendingErr == nil {
+			return model.PrintRun{}, ErrReleaseBlocked
+		} else if pendingErr != nil && !errors.Is(pendingErr, gorm.ErrRecordNotFound) {
+			return model.PrintRun{}, pendingErr
+		}
 	}
 	before := current.Status
 	current.Status = target

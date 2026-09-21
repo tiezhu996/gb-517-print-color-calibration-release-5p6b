@@ -4,6 +4,8 @@ export type RunState = 'setup' | 'printing' | 'proofing' | 'hold' | 'released';
 export const ALL_RUN_STATE: readonly RunState[] = ['setup', 'printing', 'proofing', 'hold', 'released'];
 export type DecisionType = 'release' | 'rework' | 'quarantine';
 export const ALL_DECISION_TYPE: readonly DecisionType[] = ['release', 'rework', 'quarantine'];
+export type CalibrationState = 'pending' | 'passed' | 'failed';
+export const ALL_CALIBRATION_STATE: readonly CalibrationState[] = ['pending', 'passed', 'failed'];
 
 export const ENTITY_CONFIGS: readonly EntityConfig[] = [
   { key: 'pressUnit', path: 'presses', label: '印刷设备', statuses: ['ready', 'setup', 'printing', 'maintenance'] as const },

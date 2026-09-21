@@ -25,6 +25,20 @@ const (
 
 var AllDecisionType = []string{"release", "rework", "quarantine"}
 
+// CalibrationState drives the batch colour re-calibration closed loop. A
+// request is created as pending after a reviewer registers equipment, target
+// delta, samples and retest deadline, and moves exactly once to passed or
+// failed when the retest is backfilled.
+type CalibrationState string
+
+const (
+	CalibrationStatePending CalibrationState = "pending"
+	CalibrationStatePassed  CalibrationState = "passed"
+	CalibrationStateFailed  CalibrationState = "failed"
+)
+
+var AllCalibrationState = []string{"pending", "passed", "failed"}
+
 var PressUnitTransitions = map[string]map[string]bool{
 	"ready":       {"setup": true, "printing": true},
 	"setup":       {"printing": true, "maintenance": true, "ready": true},

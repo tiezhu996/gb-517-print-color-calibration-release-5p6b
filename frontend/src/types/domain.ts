@@ -18,11 +18,42 @@ export interface DomainRecord {
   createdAt: string;
   updatedAt: string;
   revisions?: RevisionRecord[];
+  latestCalibration?: CalibrationRecord | null;
+  calibrations?: CalibrationRecord[];
 }
 
 export interface RevisionRecord {
   id: number; version: number; status: string; name: string; metricValue: number;
   metricUnit: string; evidence: string; actor: string; requestId: string; reason: string; createdAt: string;
+}
+
+// CalibrationRecord is the batch colour re-calibration closed loop. Pending
+// requests block batch release; passed retests clear the gate and failed
+// retests hold the batch with an auto-generated quarantine decision.
+export interface CalibrationRecord {
+  id: number;
+  code: string;
+  printRunId: number;
+  pressUnitId: number;
+  pressCode: string;
+  pressName: string;
+  samples: string;
+  targetDelta: number;
+  retestDueAt: string;
+  status: 'pending' | 'passed' | 'failed';
+  version: number;
+  measuredDelta: number | null;
+  resultNote: string;
+  completedAt: string | null;
+  completedBy: string;
+  createdBy: string;
+  requestId: string;
+  createdAt: string;
+  updatedAt: string;
+  deviation?: number | null;
+  runStatus?: string;
+  quarantineCode?: string;
+  quarantineDecisionId?: number;
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }

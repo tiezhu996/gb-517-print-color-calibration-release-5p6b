@@ -5,6 +5,7 @@ import PressUnitPage from '../pages/PressUnitPage';
 import PrintRunPage from '../pages/PrintRunPage';
 import ColorProofPage from '../pages/ColorProofPage';
 import ReleaseDecisionPage from '../pages/ReleaseDecisionPage';
+import CalibrationPage from '../pages/CalibrationPage';
 import AuditPage from '../pages/AuditPage';
 import { roleAtLeast, useAuth, type UserRole } from '../hooks/useAuth';
 
@@ -16,5 +17,6 @@ function RoleGuard({ minimum, children }: { minimum: UserRole; children: ReactNo
 export const router = createBrowserRouter([{ path: '/', element: <App />, children: [
   { index: true, element: <Navigate to="/presses" replace /> },
   { path: 'presses', element: <PressUnitPage /> }, { path: 'runs', element: <PrintRunPage /> }, { path: 'proofs', element: <ColorProofPage /> }, { path: 'release', element: <ReleaseDecisionPage /> },
+  { path: 'calibrations', element: <CalibrationPage /> },
   { path: 'audit', element: <RoleGuard minimum="reviewer"><AuditPage /></RoleGuard> },
 ] }], { future: { v7_fetcherPersist: true, v7_normalizeFormMethod: true, v7_partialHydration: true, v7_relativeSplatPath: true, v7_skipActionErrorRevalidation: true } });

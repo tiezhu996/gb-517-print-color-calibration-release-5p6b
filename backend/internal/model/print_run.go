@@ -17,6 +17,11 @@ type PrintRun struct {
 	Evidence    string             `json:"evidence" gorm:"size:2000"`
 	RelatedCode string             `json:"relatedCode" gorm:"size:64;index"`
 	Revisions   []PrintRunRevision `json:"revisions,omitempty" gorm:"foreignKey:PrintRunID"`
+	// Calibrations is the batch colour re-calibration closed loop. Only the
+	// newest request is attached to list views while detail views preload the
+	// whole chain.
+	Calibrations      []CalibrationRequest `json:"calibrations,omitempty" gorm:"foreignKey:PrintRunID"`
+	LatestCalibration *CalibrationRequest  `json:"latestCalibration,omitempty" gorm:"-"`
 }
 
 func (item *PrintRun) GetBase() *BaseModel { return &item.BaseModel }
