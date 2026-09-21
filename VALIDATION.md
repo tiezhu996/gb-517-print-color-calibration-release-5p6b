@@ -22,7 +22,13 @@ docker compose config --quiet
 ```
 
 - 路由集成测试覆盖 viewer 写入 403、operator 放行 403、reviewer 放行成功、已决记录更新 409，以及色彩配置/放行决定两条不可变修订链。
-- 非测试 Go 代码为 38 个文件、3143 行，符合提示词的 26-38 文件与 2700-3900 行范围。
+- 新增 `TestCalibrationClosedLoop` 与 `TestCalibrationConcurrentScheduleAndResolve`（含 `-race`）：
+  - operator/viewer 发起与回填复校准均 403；维护中设备、过期复测期限返回 422 且批次状态/版本不变。
+  - 同批次第二条待处理申请 409；待处理期间批次任何迁移（含放行）409。
+  - 达标回填（实测 ΔE ≤ 目标）后申请 `passed` 且批次才可放行；重复回填 409，实测证据不被覆盖（修订链保留 v1/v2）。
+  - 超差回填在同一事务内把批次 `proofing -> hold`（版本 +1）并生成终态 `quarantine` 决定，申请回读带隔离决定编码；回到 proofing 后放行仍 409。
+  - 8 路并发发起仅 1 条 201、其余 409；8 路并发回填仅 1 条 200、其余 409。
+- 非测试 Go 代码新增复校准分层后为 44 个文件、3828 行（基线为 38 个文件、3143 行）；新增实体保持独立 model/dto/repository/service/handler 文件，未合并既有职责。
 
 ## 空卷 Compose 与 API
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/print-color-calibration-release/backend/internal/dto"
 	"github.com/blueship581/print-color-calibration-release/backend/internal/model"
 	"github.com/blueship581/print-color-calibration-release/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type PrintRunService interface {
@@ -22,13 +24,20 @@ type PrintRunService interface {
 	StatusCounts(context.Context) (map[string]int64, error)
 }
 
+// calibrationGate exposes the latest re-calibration request of a run so the
+// run state machine can enforce the release closed loop.
+type calibrationGate interface {
+	LatestForRun(context.Context, uint) (model.CalibrationRequest, error)
+}
+
 type printRunService struct {
 	repository repository.PrintRunRepository
 	security   SecurityService
+	gate       calibrationGate
 }
 
-func NewPrintRunService(repo repository.PrintRunRepository, security SecurityService) PrintRunService {
-	return &printRunService{repository: repo, security: security}
+func NewPrintRunService(repo repository.PrintRunRepository, security SecurityService, gate calibrationGate) PrintRunService {
+	return &printRunService{repository: repo, security: security, gate: gate}
 }
 
 func (s *printRunService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.PrintRun], error) {
@@ -100,6 +109,21 @@ func (s *printRunService) Transition(ctx context.Context, id uint, input dto.Tra
 	}
 	if !constants.CanTransition(constants.PrintRunTransitions, current.Status, target) {
 		return model.PrintRun{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+	}
+	if s.gate != nil {
+		if latest, err := s.gate.LatestForRun(ctx, id); err == nil {
+			// A pending re-calibration freezes the batch until the retest is
+			// recorded; a failed one must return to proofing and pass before
+			// release. Rejected transitions never mutate run state.
+			switch {
+			case latest.Status == model.CalibrationRequestInitialStatus:
+				return model.PrintRun{}, ErrCalibrationBlocked
+			case latest.Status == string(constants.CalibrationStatusFailed) && target == string(constants.RunStateReleased):
+				return model.PrintRun{}, ErrCalibrationBlocked
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.PrintRun{}, err
+		}
 	}
 	before := current.Status
 	current.Status = target

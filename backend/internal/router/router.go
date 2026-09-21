@@ -27,19 +27,22 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	}
 
 	securityRepository := repository.NewSecurityRepository(db)
-	securityService := service.NewSecurityService(securityRepository, cfg)
 	pressUnitRepository := repository.NewPressUnitRepository(db)
 	printRunRepository := repository.NewPrintRunRepository(db)
 	colorProofRepository := repository.NewColorProofRepository(db)
 	releaseDecisionRepository := repository.NewReleaseDecisionRepository(db)
+	calibrationRepository := repository.NewCalibrationRequestRepository(db)
+	securityService := service.NewSecurityService(securityRepository, cfg)
 	pressUnitService := service.NewPressUnitService(pressUnitRepository, securityService)
-	printRunService := service.NewPrintRunService(printRunRepository, securityService)
+	printRunService := service.NewPrintRunService(printRunRepository, securityService, calibrationRepository)
 	colorProofService := service.NewColorProofService(colorProofRepository, securityService)
 	releaseDecisionService := service.NewReleaseDecisionService(releaseDecisionRepository, securityService)
+	calibrationService := service.NewCalibrationService(calibrationRepository, printRunRepository, pressUnitRepository, releaseDecisionRepository, securityService)
 	pressUnitHandler := handler.NewPressUnitHandler(pressUnitService)
 	printRunHandler := handler.NewPrintRunHandler(printRunService)
 	colorProofHandler := handler.NewColorProofHandler(colorProofService)
 	releaseDecisionHandler := handler.NewReleaseDecisionHandler(releaseDecisionService)
+	calibrationHandler := handler.NewCalibrationRequestHandler(calibrationService)
 	systemHandler := handler.NewSystemHandler(securityService, pressUnitService, printRunService, colorProofService, releaseDecisionService, db, redisClient)
 
 	engine.GET("/healthz", systemHandler.Health)
@@ -58,6 +61,7 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	printRunHandler.Register(api)
 	colorProofHandler.Register(api)
 	releaseDecisionHandler.Register(api)
+	calibrationHandler.Register(api)
 
 	engine.NoRoute(func(c *gin.Context) {
 		if c.Request.Method == http.MethodOptions {

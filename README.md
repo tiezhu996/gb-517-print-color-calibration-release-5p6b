@@ -39,8 +39,13 @@ docker compose down -v --remove-orphans
 | 印刷批次 | `PrintRun` | `/api/runs` | setup, printing, proofing, hold, released |
 | 色彩校样 | `ColorProof` | `/api/proofs` | captured, review, accepted, rejected |
 | 放行决定 | `ReleaseDecision` | `/api/release` | draft, release, rework, quarantine |
+| 批次色彩复校准 | `CalibrationRequest` | `/api/calibrations` | pending, passed, failed |
 
-- JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC。
+- 批次进入校样（proofing）后，复核人可发起一次色彩复校准，登记设备、目标色差、样本和复测期限；同一批次至多一条待处理申请（唯一待处理槽位 + 乐观锁，并发下也只成功一次）。
+- 设备处于维护或复测期限无效时拒绝申请且不改变批次状态；复测回填实测色差后由系统判定，达标才解除批次放行限制。
+- 超差时在同一数据库事务内把批次转入 hold 并生成终态 quarantine 放行决定（隔离决定）；重复/并发回填只能成功一次，实测证据不可覆盖。
+- 批次、校样和放行页均展示复校准申请、目标/实测色差、偏差与最终状态，刷新后通过不可变修订链回读。
+- JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC，复校准的发起与回填仅限 reviewer/admin。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 色彩配置和放行决定在同一数据库事务内追加不可变修订；每个版本保留业务证据、操作者、请求 ID 和原因。
 - 已放行或隔离的决定禁止覆盖式编辑；校样接收/拒绝和批次放行只能由 `reviewer/admin` 完成。
@@ -123,6 +128,7 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `RunState` | `setup, printing, proofing, hold, released` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `DecisionType` | `release, rework, quarantine` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| `CalibrationStatus` | `pending, passed, failed` | `backend/internal/constants/status.go`、`frontend/src/api/calibration.ts` |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

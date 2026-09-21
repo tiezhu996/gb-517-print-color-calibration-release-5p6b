@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/blueship581/print-color-calibration-release/backend/internal/config"
@@ -81,6 +82,7 @@ func migrate(db *gorm.DB) error {
 		&model.PrintRun{}, &model.PrintRunRevision{},
 		&model.ColorProof{},
 		&model.ReleaseDecision{}, &model.ReleaseDecisionRevision{},
+		&model.CalibrationRequest{}, &model.CalibrationRevision{},
 	)
 }
 
@@ -118,6 +120,10 @@ func Seed(ctx context.Context, db *gorm.DB) error {
 	}
 
 	if err := seedReleaseDecision(ctx, db); err != nil {
+		return err
+	}
+
+	if err := seedCalibrationRequest(ctx, db); err != nil {
 		return err
 	}
 
@@ -254,5 +260,44 @@ func seedReleaseDecision(ctx context.Context, db *gorm.DB) error {
 			})
 		}
 		return tx.Create(&revisions).Error
+	})
+}
+
+func seedCalibrationRequest(ctx context.Context, db *gorm.DB) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.CalibrationRequest{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	var run model.PrintRun
+	if err := db.WithContext(ctx).Where("code = ?", "PR-003").First(&run).Error; err != nil {
+		return err
+	}
+	var press model.PressUnit
+	if err := db.WithContext(ctx).Where("code = ?", "PU-003").First(&press).Error; err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	due := now.Add(48 * time.Hour)
+	slot := "run-" + strconv.FormatUint(uint64(run.ID), 10)
+	item := model.CalibrationRequest{
+		BaseModel: model.BaseModel{
+			Code: "CR-SEED-001", Name: "色彩复校准 · " + run.Code,
+			Status: model.CalibrationRequestInitialStatus, Version: 1,
+			Description: "进入校样后由复核人发起的色彩复校准备选记录",
+		},
+		PrintRunID: run.ID, PrintRunCode: run.Code, PressID: press.ID, PressCode: press.Code,
+		TargetDelta: 2.0, Sample: "首件签样 + 三个随机印刷位置", RetestDueAt: due,
+		Evidence: "分光密度仪初测 ΔE 2.3，需要复测确认", PendingSlot: &slot,
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Omit("Revisions").Create(&item).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.CalibrationRevision{
+			CalibrationRequestID: item.ID, Version: item.Version, Status: item.Status,
+			TargetDelta: item.TargetDelta, Sample: item.Sample, RetestDueAt: due,
+			Evidence: item.Evidence, PressCode: press.Code, PrintRunCode: run.Code,
+			Actor: "seed", RequestID: "startup-seed", Reason: "scheduled initial colour calibration",
+		}).Error
 	})
 }

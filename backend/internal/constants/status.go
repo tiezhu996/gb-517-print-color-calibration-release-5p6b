@@ -25,6 +25,25 @@ const (
 
 var AllDecisionType = []string{"release", "rework", "quarantine"}
 
+type CalibrationStatus string
+
+const (
+	CalibrationStatusPending CalibrationStatus = "pending"
+	CalibrationStatusPassed  CalibrationStatus = "passed"
+	CalibrationStatusFailed  CalibrationStatus = "failed"
+)
+
+var AllCalibrationStatus = []string{"pending", "passed", "failed"}
+
+// CalibrationTransitions models the closed loop: a pending request is resolved
+// exactly once. A failed request may be reopened by a reviewer after the batch
+// returns to proofing; passed requests are immutable evidence.
+var CalibrationTransitions = map[string]map[string]bool{
+	"pending": {"passed": true, "failed": true},
+	"failed":  {"pending": true},
+	"passed":  {},
+}
+
 var PressUnitTransitions = map[string]map[string]bool{
 	"ready":       {"setup": true, "printing": true},
 	"setup":       {"printing": true, "maintenance": true, "ready": true},
